@@ -6,12 +6,13 @@ import type { ThreefishWorkerRequest, ThreefishWorkerResponse } from '../lib/thr
 type Props = {
   mode: 'encrypt' | 'decrypt';
   blockSize: 256 | 512 | 1024;
+  setBlockSize: (size: 256 | 512 | 1024) => void;
   onTweakUpdate: (tweak: string) => void;
   encryptionKey: string;
   onEncryptedCountChange?: (count: number) => void;
 };
 
-export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryptionKey, onEncryptedCountChange }: Props) {
+export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweakUpdate, encryptionKey, onEncryptedCountChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -22,6 +23,17 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
   const [localEncryptedCount, setLocalEncryptedCount] = useState(0);
   const [showHighlight, setShowHighlight] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  // True when the whole image has been encrypted this session — safe to use Full Image Decrypt
+  const [isFullyEncrypted, setIsFullyEncrypted] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const isProcessingRef = useRef(false);
+
+  const updateProcessingState = (processing: boolean) => {
+    if (isProcessingRef.current !== processing) {
+      isProcessingRef.current = processing;
+      setIsProcessing(processing);
+    }
+  };
 
 
 
@@ -66,6 +78,9 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
           updateEncryptedCount();
         }
         pendingRequests.current.delete(id);
+        if (pendingRequests.current.size === 0) {
+          updateProcessingState(false);
+        }
         return;
       }
 
@@ -97,6 +112,9 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
           if (showHighlightRef.current) drawHighlight();
         }
         pendingRequests.current.delete(id);
+        if (pendingRequests.current.size === 0) {
+          updateProcessingState(false);
+        }
       }
     };
 
@@ -108,34 +126,89 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
 
 
 
-  // --- Load image from a File object (shared by file-input and drag-drop) ---
+  // --- Load image from a File object ---
+  // .ciphercanvas: binary format with display pixels + separate raw cipher bytes
+  // Regular images: drawn normally via <img> element
   const loadImageFile = (file: File) => {
-    if (!file.type.startsWith('image/')) return;
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      if (canvasRef.current && bgCanvasRef.current) {
-        const w = img.width;
-        const h = img.height;
+    file.arrayBuffer().then(buf => {
+      const view = new DataView(buf);
+      const magic = view.getUint32(0, true);
+
+      if (magic === 0x43434e56) {
+        // ---- .ciphercanvas format ----
+        // Header (20 bytes): magic(4) + blockSize(4) + pPerBlock(4) + width(4) + height(4)
+        // Section 1: display pixels, all alpha=255 (width*height*4 bytes)
+        // Section 2: numBlocks (4 bytes)
+        // Section 3: for each block: bx(4) + by(4) + cipherBytes(pPerBlock*4)
+        const fileBlockSize = view.getUint32(4, true) as 256 | 512 | 1024;
+        const filePPerBlock = view.getUint32(8, true);
+        const w = view.getUint32(12, true);
+        const h = view.getUint32(16, true);
+        const displayPixels = new Uint8ClampedArray(buf, 20, w * h * 4);
+
+        if (!canvasRef.current || !bgCanvasRef.current) return;
         canvasRef.current.width = w;
         canvasRef.current.height = h;
         bgCanvasRef.current.width = w;
         bgCanvasRef.current.height = h;
 
-        const ctx = canvasRef.current.getContext('2d');
-        const bgCtx = bgCanvasRef.current.getContext('2d');
-        ctx?.drawImage(img, 0, 0);
-        bgCtx?.drawImage(img, 0, 0);
+        // Write display pixels directly — alpha=255 everywhere, no premultiplication issue
+        const displayImg = new ImageData(displayPixels, w, h);
+        canvasRef.current.getContext('2d')?.putImageData(displayImg, 0, 0);
+        bgCanvasRef.current.getContext('2d')?.putImageData(displayImg, 0, 0);
 
+        // Restore cipher block map from file
         encryptedBlocks.current.clear();
         encryptedBlockData.current.clear();
+
+        const bytesPerCipherBlock = filePPerBlock * 4;
+        let offset = 20 + w * h * 4;
+        const numBlocks = view.getUint32(offset, true);
+        offset += 4;
+        for (let i = 0; i < numBlocks; i++) {
+          const bx = view.getUint32(offset, true);
+          const by = view.getUint32(offset + 4, true);
+          const cipherBytes = new Uint8Array(buf, offset + 8, bytesPerCipherBlock);
+          const blockKey = `${bx},${by}`;
+          encryptedBlocks.current.add(blockKey);
+          encryptedBlockData.current.set(blockKey, new Uint8Array(cipherBytes));
+          offset += 8 + bytesPerCipherBlock;
+        }
+
         updateEncryptedCount();
         clearHighlight();
+        setIsFullyEncrypted(numBlocks > 0);
         setImageLoaded(true);
+
+        if (fileBlockSize !== blockSize) {
+          setBlockSize(fileBlockSize);
+          alert(`Notice: Block size automatically set to ${fileBlockSize}-bit to match the loaded encrypted image.`);
+        }
+      } else {
+        // ---- Regular image ----
+        if (!file.type.startsWith('image/')) return;
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          if (canvasRef.current && bgCanvasRef.current) {
+            canvasRef.current.width = img.width;
+            canvasRef.current.height = img.height;
+            bgCanvasRef.current.width = img.width;
+            bgCanvasRef.current.height = img.height;
+            canvasRef.current.getContext('2d')?.drawImage(img, 0, 0);
+            bgCanvasRef.current.getContext('2d')?.drawImage(img, 0, 0);
+            encryptedBlocks.current.clear();
+            encryptedBlockData.current.clear();
+            updateEncryptedCount();
+            clearHighlight();
+            setIsFullyEncrypted(false);
+            setImageLoaded(true);
+          }
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
       }
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
+    });
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -224,6 +297,7 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
       }
 
       pendingRequests.current.set(reqId, { x: startX, y: startY, w: pPerBlock, h: 1, blockKey, reqMode: mode });
+      updateProcessingState(true);
 
       workerRef.current.postMessage({
         id: reqId,
@@ -302,6 +376,8 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
     // They'll be decryptable once their encryption response arrives
     updateEncryptedCount();
 
+    updateProcessingState(true);
+
     // Now decrypt all blocks that have stored data
     for (const [blockKey, data] of encryptedBlockData.current.entries()) {
       const [bx, by] = blockKey.split(',').map(Number);
@@ -323,7 +399,113 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
     }
   };
 
+  // --- Encrypt every block in the image (required before sharing via download) ---
+  const encryptAll = () => {
+    if (!canvasRef.current || !workerRef.current) return;
+    const pPerBlock = getPixelsPerBlock();
+    const w = canvasRef.current.width;
+    const h = canvasRef.current.height;
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+    updateProcessingState(true);
 
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x += pPerBlock) {
+        const bw = Math.min(pPerBlock, w - x);
+        if (bw < pPerBlock) continue; // skip incomplete edge blocks
+        const bx = Math.floor(x / pPerBlock);
+        const blockKey = `${bx},${y}`;
+        if (encryptedBlocks.current.has(blockKey)) continue; // already encrypted
+
+        const imgData = ctx.getImageData(x, y, pPerBlock, 1);
+        const blockData = imgData.data;
+        encryptedBlocks.current.add(blockKey);
+
+        const tweakStr = `TWK${bx.toString().padStart(5, '0')}${y.toString().padStart(5, '0')}000`;
+        const reqId = `encall-${bx}-${y}-${Math.random()}`;
+        pendingRequests.current.set(reqId, { x, y, w: pPerBlock, h: 1, blockKey, reqMode: 'encrypt' });
+        workerRef.current.postMessage({
+          id: reqId, mode: 'encrypt', blockData, blockSize, tweak: tweakStr, key: encryptionKey,
+        } as ThreefishWorkerRequest);
+      }
+    }
+    updateEncryptedCount();
+    setIsFullyEncrypted(true);
+  };
+
+  // --- Download as .ciphercanvas binary ---
+  // Format:
+  //   Header (20B): magic(4) + blockSize(4) + pPerBlock(4) + width(4) + height(4)
+  //   Section 1: display pixels with alpha=255 (width*height*4 bytes)
+  //   Section 2: numBlocks (4 bytes)
+  //   Section 3: per-block: bx(4) + by(4) + raw cipher bytes (pPerBlock*4 bytes)
+  const downloadImage = () => {
+    if (!canvasRef.current) return;
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+    const w = canvasRef.current.width;
+    const h = canvasRef.current.height;
+    const pPerBlock = getPixelsPerBlock();
+    const bytesPerCipherBlock = pPerBlock * 4;
+
+    // Section 1: get display pixels (already alpha=255 in canvas from our putImageData with forced alpha)
+    const displayPixels = new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer);
+
+    // Collect cipher blocks
+    const blocks = Array.from(encryptedBlockData.current.entries());
+    const numBlocks = blocks.length;
+
+    // Build binary buffer
+    const headerSize = 20;
+    const section1Size = w * h * 4;
+    const section2Size = 4;
+    const section3Size = numBlocks * (8 + bytesPerCipherBlock);
+    const totalSize = headerSize + section1Size + section2Size + section3Size;
+
+    const buffer = new ArrayBuffer(totalSize);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+
+    // Header
+    view.setUint32(0, 0x43434e56, true);  // magic "CCNV"
+    view.setUint32(4, blockSize, true);
+    view.setUint32(8, pPerBlock, true);
+    view.setUint32(12, w, true);
+    view.setUint32(16, h, true);
+
+    // Section 1: display pixels
+    bytes.set(displayPixels, headerSize);
+
+    // Section 2: block count
+    view.setUint32(headerSize + section1Size, numBlocks, true);
+
+    // Section 3: cipher blocks (exact raw bytes, never touched by canvas)
+    let offset = headerSize + section1Size + section2Size;
+    for (const [blockKey, cipherBytes] of blocks) {
+      const [bx, by] = blockKey.split(',').map(Number);
+      view.setUint32(offset, bx, true);
+      view.setUint32(offset + 4, by, true);
+      bytes.set(cipherBytes, offset + 8);
+      offset += 8 + bytesPerCipherBlock;
+    }
+
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = `ciphercanvas_${Date.now()}.ciphercanvas`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // --- Download as standard PNG when fully decrypted ---
+  const downloadNormalImage = () => {
+    if (!canvasRef.current) return;
+    const link = document.createElement('a');
+    link.download = `decrypted_image_${Date.now()}.png`;
+    link.href = canvasRef.current.toDataURL('image/png');
+    link.click();
+  };
 
   // --- Highlight overlay for remaining encrypted blocks ---
   const drawHighlight = () => {
@@ -368,7 +550,7 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
       {/* Drag-over overlay */}
       {isDraggingOver && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-emerald-500/10 backdrop-blur-sm border-2 border-dashed border-emerald-400/50 rounded-2xl pointer-events-none">
-          <span className="text-emerald-400 font-semibold text-lg tracking-widest uppercase">Drop image here</span>
+          <span className="text-emerald-400 font-semibold text-lg tracking-widest uppercase">Drop image or .ciphercanvas file</span>
         </div>
       )}
 
@@ -378,7 +560,7 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
             <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white/5 border border-dashed border-white/20 backdrop-blur-md transition-all group-hover:bg-white/10 group-hover:scale-105">
               <span className="text-white/60 font-medium tracking-widest text-sm">UPLOAD OR DROP IMAGE TO INITIALIZE</span>
               <span className="text-white/30 text-xs">Click to browse or drag & drop</span>
-              <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+              <input type="file" accept="image/*,.ciphercanvas" onChange={handleImageUpload} className="hidden" />
             </div>
           </label>
         </div>
@@ -407,25 +589,74 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
 
       </div>
 
-      {/* Floating toolbar — appears when there are encrypted blocks */}
-      {imageLoaded && localEncryptedCount > 0 && (
-        <div className="flex items-center gap-3 mt-4">
-          <button
-            onClick={decryptAll}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 hover:bg-rose-500/30 active:scale-[0.97]"
-          >
-            🔓 Decrypt All ({localEncryptedCount} blocks)
-          </button>
-          <button
-            onClick={toggleHighlight}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
-              showHighlight
-                ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
-                : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
-            }`}
-          >
-            {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
-          </button>
+      {/* Toolbar */}
+      {imageLoaded && (
+        <div className="flex flex-col items-center gap-2 mt-4">
+          <div className="flex items-center flex-wrap justify-center gap-2">
+
+            {/* Encrypt All — prepares image for sharing */}
+            {localEncryptedCount === 0 && (
+              <button
+                onClick={encryptAll}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 active:scale-[0.97]"
+              >
+                ⚡ Encrypt All
+              </button>
+            )}
+
+            {/* Download */}
+            {localEncryptedCount > 0 ? (
+              <button
+                onClick={downloadImage}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
+              >
+                ⬇ Download .ciphercanvas
+              </button>
+            ) : (
+              <button
+                onClick={downloadNormalImage}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
+              >
+                ⬇ Download PNG
+              </button>
+            )}
+
+            {localEncryptedCount > 0 ? (
+              /* Session-tracked blocks (including restored from .ciphercanvas) — use decryptAll */
+              <>
+                <button
+                  onClick={decryptAll}
+                  disabled={isProcessing}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
+                    isProcessing
+                      ? 'bg-rose-500/5 text-rose-400/40 ring-rose-500/20 cursor-not-allowed'
+                      : 'bg-rose-500/20 text-rose-400 ring-rose-500/40 hover:bg-rose-500/30'
+                  }`}
+                >
+                  {isProcessing ? '⏳ Processing...' : `🔓 Decrypt All (${localEncryptedCount} blocks)`}
+                </button>
+                <button
+                  onClick={toggleHighlight}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
+                    showHighlight
+                      ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
+                      : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
+                </button>
+              </>
+            ) : null}
+          </div>
+
+          {/* Contextual hint */}
+          <p className="text-[10px] text-white/25 tracking-widest uppercase text-center">
+            {isFullyEncrypted
+              ? 'Fully encrypted — safe to download and share'
+              : localEncryptedCount > 0
+                ? 'Partially encrypted — use Encrypt All before sharing'
+                : 'Upload an encrypted image → enter key → Full Image Decrypt'}
+          </p>
         </div>
       )}
     </div>

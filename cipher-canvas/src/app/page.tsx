@@ -46,6 +46,7 @@ export default function Home() {
         <CanvasWorkspace 
           mode={mode}
           blockSize={blockSize}
+          setBlockSize={setBlockSize}
           onTweakUpdate={setTweak}
           encryptionKey={encryptionKey}
           onEncryptedCountChange={setEncryptedCount}
