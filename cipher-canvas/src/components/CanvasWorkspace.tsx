@@ -21,6 +21,9 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
   const [isDrawing, setIsDrawing] = useState(false);
   const [localEncryptedCount, setLocalEncryptedCount] = useState(0);
   const [showHighlight, setShowHighlight] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
+
 
   // Pending worker requests
   const pendingRequests = useRef<Map<string, { x: number, y: number, w: number, h: number, blockKey: string, reqMode: 'encrypt' | 'decrypt' }>>(new Map());
@@ -72,6 +75,8 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
         if (ctx) {
           if (reqInfo.reqMode === 'encrypt') {
             encryptedBlockData.current.set(reqInfo.blockKey, new Uint8Array(result));
+            // Always ensure block is tracked (may have been removed by premature decrypt attempt)
+            encryptedBlocks.current.add(reqInfo.blockKey);
           } else {
             encryptedBlockData.current.delete(reqInfo.blockKey);
             encryptedBlocks.current.delete(reqInfo.blockKey);
@@ -85,6 +90,8 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
 
           const imgData = new ImageData(displayBuf, reqInfo.w, reqInfo.h);
           ctx.putImageData(imgData, reqInfo.x, reqInfo.y);
+
+
 
           // Update highlight overlay if visible
           if (showHighlightRef.current) drawHighlight();
@@ -101,17 +108,15 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
 
 
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  // --- Load image from a File object (shared by file-input and drag-drop) ---
+  const loadImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return;
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       if (canvasRef.current && bgCanvasRef.current) {
         const w = img.width;
         const h = img.height;
-        
         canvasRef.current.width = w;
         canvasRef.current.height = h;
         bgCanvasRef.current.width = w;
@@ -119,21 +124,42 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
 
         const ctx = canvasRef.current.getContext('2d');
         const bgCtx = bgCanvasRef.current.getContext('2d');
-        
         ctx?.drawImage(img, 0, 0);
         bgCtx?.drawImage(img, 0, 0);
-        
-        // Reset tracking when a new image is loaded
+
         encryptedBlocks.current.clear();
         encryptedBlockData.current.clear();
         updateEncryptedCount();
         clearHighlight();
-        
         setImageLoaded(true);
       }
       URL.revokeObjectURL(url);
     };
     img.src = url;
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) loadImageFile(file);
+  };
+
+  // --- Drag and drop handlers ---
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(true);
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) loadImageFile(file);
   };
 
   const getPixelsPerBlock = () => {
@@ -186,9 +212,7 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
         // Use stored raw cipher bytes (not canvas data which suffers alpha premultiplication)
         const stored = encryptedBlockData.current.get(blockKey);
         if (!stored) {
-          // Orphan block: tracked as encrypted but no data — clean up
-          encryptedBlocks.current.delete(blockKey);
-          updateEncryptedCount();
+          // Data not available yet — encryption may still be in-flight. Skip for now.
           return;
         }
         blockData = new Uint8ClampedArray(stored);
@@ -269,16 +293,13 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
     lastPointerPos.current = { x, y };
   };
 
+
   // --- Decrypt All remaining blocks at once ---
   const decryptAll = () => {
     if (!workerRef.current) return;
 
-    // First, clean up orphan blocks that are in encryptedBlocks but have no stored data
-    for (const blockKey of encryptedBlocks.current) {
-      if (!encryptedBlockData.current.has(blockKey)) {
-        encryptedBlocks.current.delete(blockKey);
-      }
-    }
+    // Skip orphan blocks (in encryptedBlocks but not yet in encryptedBlockData — still in-flight)
+    // They'll be decryptable once their encryption response arrives
     updateEncryptedCount();
 
     // Now decrypt all blocks that have stored data
@@ -301,6 +322,8 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
       } as ThreefishWorkerRequest);
     }
   };
+
+
 
   // --- Highlight overlay for remaining encrypted blocks ---
   const drawHighlight = () => {
@@ -336,19 +359,37 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
   };
 
   return (
-    <div className="flex flex-col items-center justify-center w-full h-full p-4 relative">
+    <div
+      className="flex flex-col items-center justify-center w-full h-full p-4 relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag-over overlay */}
+      {isDraggingOver && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-emerald-500/10 backdrop-blur-sm border-2 border-dashed border-emerald-400/50 rounded-2xl pointer-events-none">
+          <span className="text-emerald-400 font-semibold text-lg tracking-widest uppercase">Drop image here</span>
+        </div>
+      )}
+
       {!imageLoaded && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
           <label className="cursor-pointer pointer-events-auto group">
-            <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md transition-all group-hover:bg-white/10 group-hover:scale-105">
-              <span className="text-white/60 font-medium tracking-widest text-sm">UPLOAD IMAGE TO INITIALIZE</span>
+            <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white/5 border border-dashed border-white/20 backdrop-blur-md transition-all group-hover:bg-white/10 group-hover:scale-105">
+              <span className="text-white/60 font-medium tracking-widest text-sm">UPLOAD OR DROP IMAGE TO INITIALIZE</span>
+              <span className="text-white/30 text-xs">Click to browse or drag & drop</span>
               <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
             </div>
           </label>
         </div>
       )}
       
-      <div className={`relative rounded-xl overflow-hidden shadow-2xl shadow-black/50 transition-all ${imageLoaded ? 'ring-1 ring-white/10' : 'opacity-0'}`}>
+      {/* Image container with noticeable glow */}
+      <div className={`relative rounded-xl overflow-hidden transition-all duration-500 ${
+        imageLoaded
+          ? 'ring-1 ring-white/15 shadow-[0_0_30px_rgba(16,185,129,0.2),0_0_60px_rgba(16,185,129,0.1),0_0_100px_rgba(59,130,246,0.12)]'
+          : 'opacity-0'
+      }`}>
         <canvas ref={bgCanvasRef} className="hidden" />
         <canvas
           ref={canvasRef}
@@ -358,11 +399,12 @@ export default function CanvasWorkspace({ mode, blockSize, onTweakUpdate, encryp
           onPointerUp={handlePointerUp}
           onPointerOut={handlePointerUp}
         />
-        {/* Highlight overlay canvas — sits on top of main canvas, pointer-events-none */}
+        {/* Highlight overlay canvas */}
         <canvas
           ref={overlayCanvasRef}
           className="absolute top-0 left-0 w-full h-full pointer-events-none"
         />
+
       </div>
 
       {/* Floating toolbar — appears when there are encrypted blocks */}

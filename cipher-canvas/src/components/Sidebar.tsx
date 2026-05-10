@@ -1,6 +1,7 @@
 "use client";
 
 import React from 'react';
+import Image from 'next/image';
 import { Shield, Unlock, Zap, Database, KeyRound, Cpu, Shuffle } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -29,13 +30,10 @@ export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak,
   return (
     <div className="w-80 flex flex-col h-full bg-black/40 backdrop-blur-xl border-l border-white/10 p-6 gap-8 overflow-y-auto z-20 shadow-2xl">
       <div className="flex items-center gap-3">
-        <div className="p-2 bg-emerald-500/20 rounded-lg text-emerald-400">
-          <Shield size={24} />
+        <div className="p-1.5 bg-emerald-500/10 rounded-lg">
+          <Image src="/encryption.png" alt="CipherCanvas" width={28} height={28} />
         </div>
-        <div>
-          <h1 className="text-xl font-bold tracking-wider text-white">CipherCanvas</h1>
-          <p className="text-xs text-emerald-400/80 uppercase tracking-widest font-mono mt-1">Cryptographic Lab</p>
-        </div>
+        <h1 className="text-xl font-bold tracking-wider text-white">CipherCanvas</h1>
       </div>
 
       <div className="flex flex-col gap-3">
