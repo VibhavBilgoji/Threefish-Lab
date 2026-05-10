@@ -593,60 +593,65 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
       {imageLoaded && (
         <div className="flex flex-col items-center gap-2 mt-4">
           <div className="flex items-center flex-wrap justify-center gap-2">
-
-            {/* Encrypt All — prepares image for sharing */}
-            {localEncryptedCount === 0 && (
+            {isProcessing ? (
               <button
-                onClick={encryptAll}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 active:scale-[0.97]"
+                disabled
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 bg-white/5 text-white/50 ring-white/10 cursor-not-allowed"
               >
-                ⚡ Encrypt All
-              </button>
-            )}
-
-            {/* Download */}
-            {localEncryptedCount > 0 ? (
-              <button
-                onClick={downloadImage}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
-              >
-                ⬇ Download .ciphercanvas
+                <div className="w-3 h-3 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
+                Processing...
               </button>
             ) : (
-              <button
-                onClick={downloadNormalImage}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
-              >
-                ⬇ Download PNG
-              </button>
-            )}
-
-            {localEncryptedCount > 0 ? (
-              /* Session-tracked blocks (including restored from .ciphercanvas) — use decryptAll */
               <>
-                <button
-                  onClick={decryptAll}
-                  disabled={isProcessing}
-                  className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
-                    isProcessing
-                      ? 'bg-rose-500/5 text-rose-400/40 ring-rose-500/20 cursor-not-allowed'
-                      : 'bg-rose-500/20 text-rose-400 ring-rose-500/40 hover:bg-rose-500/30'
-                  }`}
-                >
-                  {isProcessing ? '⏳ Processing...' : `🔓 Decrypt All (${localEncryptedCount} blocks)`}
-                </button>
-                <button
-                  onClick={toggleHighlight}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
-                    showHighlight
-                      ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
-                      : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
-                  }`}
-                >
-                  {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
-                </button>
+                {/* Encrypt All — prepares image for sharing */}
+                {localEncryptedCount === 0 && (
+                  <button
+                    onClick={encryptAll}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 active:scale-[0.97]"
+                  >
+                    ⚡ Encrypt All
+                  </button>
+                )}
+
+                {/* Download */}
+                {localEncryptedCount > 0 ? (
+                  <button
+                    onClick={downloadImage}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
+                  >
+                    ⬇ Download .ciphercanvas
+                  </button>
+                ) : (
+                  <button
+                    onClick={downloadNormalImage}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
+                  >
+                    ⬇ Download PNG
+                  </button>
+                )}
+
+                {localEncryptedCount > 0 && (
+                  <>
+                    <button
+                      onClick={decryptAll}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 hover:bg-rose-500/30 active:scale-[0.97]"
+                    >
+                      🔓 Decrypt All ({localEncryptedCount} blocks)
+                    </button>
+                    <button
+                      onClick={toggleHighlight}
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
+                        showHighlight
+                          ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
+                          : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
+                      }`}
+                    >
+                      {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
+                    </button>
+                  </>
+                )}
               </>
-            ) : null}
+            )}
           </div>
 
           {/* Contextual hint */}
