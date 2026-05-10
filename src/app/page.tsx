@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import Sidebar from '@/components/Sidebar';
 import CanvasWorkspace from '@/components/CanvasWorkspace';
+import type { CanvasWorkspaceHandle } from '@/components/CanvasWorkspace';
 import { motion } from 'framer-motion';
 
 export default function Home() {
@@ -11,6 +12,11 @@ export default function Home() {
   const [tweak, setTweak] = useState<string>('');
   const [encryptionKey, setEncryptionKey] = useState<string>('CIPHERCANVAS2026');
   const [encryptedCount, setEncryptedCount] = useState(0);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isFullyEncrypted, setIsFullyEncrypted] = useState(false);
+
+  const canvasRef = useRef<CanvasWorkspaceHandle>(null);
 
   return (
     <main className="flex h-screen w-full bg-slate-950 text-white overflow-hidden relative font-sans selection:bg-emerald-500/30">
@@ -33,6 +39,12 @@ export default function Home() {
           encryptionKey={encryptionKey}
           setEncryptionKey={setEncryptionKey}
           hasEncryptedBlocks={encryptedCount > 0}
+          encryptedCount={encryptedCount}
+          imageLoaded={imageLoaded}
+          isProcessing={isProcessing}
+          isFullyEncrypted={isFullyEncrypted}
+          onEncryptAll={() => canvasRef.current?.encryptAll()}
+          onDecryptAll={() => canvasRef.current?.decryptAll()}
         />
       </motion.div>
 
@@ -44,12 +56,17 @@ export default function Home() {
         className="flex-1 relative z-0"
       >
         <CanvasWorkspace 
+          ref={canvasRef}
           mode={mode}
           blockSize={blockSize}
           setBlockSize={setBlockSize}
           onTweakUpdate={setTweak}
           encryptionKey={encryptionKey}
           onEncryptedCountChange={setEncryptedCount}
+          onModeSwitch={setMode}
+          onImageLoadedChange={setImageLoaded}
+          onProcessingChange={setIsProcessing}
+          onFullyEncryptedChange={setIsFullyEncrypted}
         />
       </motion.div>
     </main>

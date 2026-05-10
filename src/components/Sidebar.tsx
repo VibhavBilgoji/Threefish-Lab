@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useState } from 'react';
 import Image from 'next/image';
 import { Shield, Unlock, Zap, Database, KeyRound, Cpu, Shuffle } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -14,9 +14,17 @@ type Props = {
   encryptionKey: string;
   setEncryptionKey: (key: string) => void;
   hasEncryptedBlocks: boolean;
+  encryptedCount: number;
+  imageLoaded: boolean;
+  isProcessing: boolean;
+  isFullyEncrypted: boolean;
+  onEncryptAll: () => void;
+  onDecryptAll: () => void;
 };
 
-export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak, encryptionKey, setEncryptionKey, hasEncryptedBlocks }: Props) {
+export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak, encryptionKey, setEncryptionKey, hasEncryptedBlocks, encryptedCount, imageLoaded, isProcessing, isFullyEncrypted, onEncryptAll, onDecryptAll }: Props) {
+  const [keyCopied, setKeyCopied] = useState(false);
+
   const generateRandomKey = () => {
     // Key length in bytes: blockSize / 8 (e.g. 256 bits → 32 bytes)
     const keyBytes = blockSize / 8;
@@ -25,6 +33,12 @@ export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak,
     // Convert to hex string
     const hexKey = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
     setEncryptionKey(hexKey);
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(hexKey).then(() => {
+      setKeyCopied(true);
+      setTimeout(() => setKeyCopied(false), 2000);
+    });
   };
 
   return (
@@ -56,6 +70,45 @@ export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak,
             <Unlock size={16} /> Decrypt
           </button>
         </div>
+
+        {/* Encrypt All / Decrypt All — shown below mode switch when image is loaded */}
+        {imageLoaded && (
+          <div className="mt-1">
+            {isProcessing ? (
+              <button
+                disabled
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 bg-white/5 text-white/50 ring-white/10 cursor-not-allowed"
+              >
+                <div className="w-3 h-3 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
+                Processing...
+              </button>
+            ) : mode === 'encrypt' ? (
+              <button
+                onClick={onEncryptAll}
+                disabled={isFullyEncrypted}
+                className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ${
+                  !isFullyEncrypted
+                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 active:scale-[0.98]'
+                    : 'bg-white/5 text-white/30 ring-1 ring-white/10 cursor-not-allowed'
+                }`}
+              >
+                <Zap size={14} /> {isFullyEncrypted ? "Fully Encrypted" : "Encrypt All"}
+              </button>
+            ) : (
+              <button
+                onClick={onDecryptAll}
+                disabled={encryptedCount === 0}
+                className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ${
+                  encryptedCount > 0 
+                    ? 'bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 hover:bg-rose-500/30 active:scale-[0.98]' 
+                    : 'bg-white/5 text-white/30 ring-1 ring-white/10 cursor-not-allowed'
+                }`}
+              >
+                <Unlock size={14} /> {encryptedCount === 0 ? "Fully Decrypted" : `Decrypt All (${encryptedCount} blocks)`}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col gap-3">
@@ -90,16 +143,29 @@ export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak,
         <input 
           type="text" 
           value={encryptionKey}
-          onChange={(e) => setEncryptionKey(e.target.value)}
-          className="bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none focus:ring-1 focus:ring-emerald-500/50 transition-all font-mono"
+          onChange={(e) => !hasEncryptedBlocks && setEncryptionKey(e.target.value)}
+          disabled={hasEncryptedBlocks}
+          className={`bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none transition-all font-mono ${
+            hasEncryptedBlocks ? 'opacity-50 cursor-not-allowed' : 'focus:ring-1 focus:ring-emerald-500/50'
+          }`}
           placeholder="Enter 16-128 char key..."
         />
         <button
-          onClick={generateRandomKey}
-          className="flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-xs transition-all duration-300 bg-gradient-to-r from-emerald-500/15 to-blue-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:from-emerald-500/25 hover:to-blue-500/25 hover:ring-emerald-500/50 active:scale-[0.98]"
+          onClick={() => !hasEncryptedBlocks && generateRandomKey()}
+          disabled={hasEncryptedBlocks}
+          className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-xs transition-all duration-300 ${
+            hasEncryptedBlocks
+              ? 'bg-white/5 text-white/30 ring-1 ring-white/10 cursor-not-allowed'
+              : 'bg-gradient-to-r from-emerald-500/15 to-blue-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:from-emerald-500/25 hover:to-blue-500/25 hover:ring-emerald-500/50 active:scale-[0.98]'
+          }`}
         >
-          <Shuffle size={14} /> Generate Random Key
+          <Shuffle size={14} /> {keyCopied ? "Copied to Clipboard!" : "Generate Random Key"}
         </button>
+        {hasEncryptedBlocks && (
+          <p className="text-[10px] text-amber-400/70 uppercase tracking-widest">
+            ⚠ Decrypt all blocks to change the secret key
+          </p>
+        )}
       </div>
 
       <div className="flex flex-col gap-3 mt-auto mb-4">

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import type { ThreefishWorkerRequest, ThreefishWorkerResponse } from '../lib/threefish.worker';
 
 type Props = {
@@ -10,9 +10,18 @@ type Props = {
   onTweakUpdate: (tweak: string) => void;
   encryptionKey: string;
   onEncryptedCountChange?: (count: number) => void;
+  onModeSwitch?: (mode: 'encrypt' | 'decrypt') => void;
+  onImageLoadedChange?: (loaded: boolean) => void;
+  onProcessingChange?: (processing: boolean) => void;
+  onFullyEncryptedChange?: (fullyEncrypted: boolean) => void;
 };
 
-export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweakUpdate, encryptionKey, onEncryptedCountChange }: Props) {
+export type CanvasWorkspaceHandle = {
+  encryptAll: () => void;
+  decryptAll: () => void;
+};
+
+const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweakUpdate, encryptionKey, onEncryptedCountChange, onModeSwitch, onImageLoadedChange, onProcessingChange, onFullyEncryptedChange }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -23,8 +32,8 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
   const [localEncryptedCount, setLocalEncryptedCount] = useState(0);
   const [showHighlight, setShowHighlight] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
-  // True when the whole image has been encrypted this session — safe to use Full Image Decrypt
   const [isFullyEncrypted, setIsFullyEncrypted] = useState(false);
+  const isFullyEncryptedRef = useRef(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const isProcessingRef = useRef(false);
 
@@ -32,10 +41,22 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
     if (isProcessingRef.current !== processing) {
       isProcessingRef.current = processing;
       setIsProcessing(processing);
+      onProcessingChange?.(processing);
     }
   };
 
+  const updateImageLoaded = (loaded: boolean) => {
+    setImageLoaded(loaded);
+    onImageLoadedChange?.(loaded);
+  };
 
+  const updateFullyEncrypted = (fullyEncrypted: boolean) => {
+    if (isFullyEncryptedRef.current !== fullyEncrypted) {
+      isFullyEncryptedRef.current = fullyEncrypted;
+      setIsFullyEncrypted(fullyEncrypted);
+      onFullyEncryptedChange?.(fullyEncrypted);
+    }
+  };
 
   // Pending worker requests
   const pendingRequests = useRef<Map<string, { x: number, y: number, w: number, h: number, blockKey: string, reqMode: 'encrypt' | 'decrypt' }>>(new Map());
@@ -63,6 +84,15 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
     setLocalEncryptedCount(count);
     onEncryptedCountChangeRef.current?.(count);
   };
+
+  // Keep stable refs to encryptAll / decryptAll for the imperative handle
+  const encryptAllRef = useRef<() => void>(() => {});
+  const decryptAllRef = useRef<() => void>(() => {});
+
+  useImperativeHandle(ref, () => ({
+    encryptAll: () => encryptAllRef.current(),
+    decryptAll: () => decryptAllRef.current(),
+  }));
 
   // Setup worker — created ONCE for the component lifetime (mode is per-request, not per-worker)
   useEffect(() => {
@@ -95,6 +125,11 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
           } else {
             encryptedBlockData.current.delete(reqInfo.blockKey);
             encryptedBlocks.current.delete(reqInfo.blockKey);
+            
+            // Decrypting anything means the image is no longer fully encrypted
+            if (isFullyEncryptedRef.current) {
+              updateFullyEncrypted(false);
+            }
           }
           updateEncryptedCount();
 
@@ -177,8 +212,11 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
 
         updateEncryptedCount();
         clearHighlight();
-        setIsFullyEncrypted(numBlocks > 0);
-        setImageLoaded(true);
+        updateFullyEncrypted(numBlocks > 0);
+        updateImageLoaded(true);
+
+        // Auto-switch to decrypt mode when loading a .ciphercanvas file
+        onModeSwitch?.('decrypt');
 
         if (fileBlockSize !== blockSize) {
           setBlockSize(fileBlockSize);
@@ -201,8 +239,9 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
             encryptedBlockData.current.clear();
             updateEncryptedCount();
             clearHighlight();
-            setIsFullyEncrypted(false);
-            setImageLoaded(true);
+            updateFullyEncrypted(false);
+            updateImageLoaded(true);
+            onModeSwitch?.('encrypt');
           }
           URL.revokeObjectURL(url);
         };
@@ -262,6 +301,9 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
 
     // Skip if already processed in this drag stroke
     if (processedInDrag.current.has(blockKey)) return;
+
+    // In encrypt mode, skip blocks that are already encrypted (prevents double-encryption)
+    if (mode === 'encrypt' && encryptedBlocks.current.has(blockKey)) return;
 
     // In decrypt mode, skip blocks that were never encrypted
     if (mode === 'decrypt' && !encryptedBlocks.current.has(blockKey)) return;
@@ -376,6 +418,8 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
     // They'll be decryptable once their encryption response arrives
     updateEncryptedCount();
 
+    if (encryptedBlockData.current.size === 0) return;
+
     updateProcessingState(true);
 
     // Now decrypt all blocks that have stored data
@@ -407,18 +451,30 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
     const h = canvasRef.current.height;
     const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
-    updateProcessingState(true);
 
+    updateProcessingState(true);
+    let scheduled = 0;
+
+    // Use Math.ceil so partial edge blocks are included
+    const blocksPerRow = Math.ceil(w / pPerBlock);
     for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x += pPerBlock) {
-        const bw = Math.min(pPerBlock, w - x);
-        if (bw < pPerBlock) continue; // skip incomplete edge blocks
-        const bx = Math.floor(x / pPerBlock);
+      for (let bx = 0; bx < blocksPerRow; bx++) {
         const blockKey = `${bx},${y}`;
         if (encryptedBlocks.current.has(blockKey)) continue; // already encrypted
 
-        const imgData = ctx.getImageData(x, y, pPerBlock, 1);
-        const blockData = imgData.data;
+        const x = bx * pPerBlock;
+        const actualWidth = Math.min(pPerBlock, w - x);
+
+        // Read available pixels, then pad to full block size if on the edge
+        const imgData = ctx.getImageData(x, y, actualWidth, 1);
+        let blockData: Uint8ClampedArray;
+        if (actualWidth < pPerBlock) {
+          // Pad partial edge block with zeros to fill a full cipher block
+          blockData = new Uint8ClampedArray(pPerBlock * 4);
+          blockData.set(imgData.data);
+        } else {
+          blockData = imgData.data;
+        }
         encryptedBlocks.current.add(blockKey);
 
         const tweakStr = `TWK${bx.toString().padStart(5, '0')}${y.toString().padStart(5, '0')}000`;
@@ -427,11 +483,20 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
         workerRef.current.postMessage({
           id: reqId, mode: 'encrypt', blockData, blockSize, tweak: tweakStr, key: encryptionKey,
         } as ThreefishWorkerRequest);
+        scheduled++;
       }
     }
+
+    if (scheduled === 0) {
+      updateProcessingState(false);
+    }
     updateEncryptedCount();
-    setIsFullyEncrypted(true);
+    updateFullyEncrypted(true);
   };
+
+  // Keep refs in sync so the imperative handle always calls the latest closure
+  encryptAllRef.current = encryptAll;
+  decryptAllRef.current = decryptAll;
 
   // --- Download as .ciphercanvas binary ---
   // Format:
@@ -603,16 +668,6 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
               </button>
             ) : (
               <>
-                {/* Encrypt All — prepares image for sharing */}
-                {localEncryptedCount === 0 && (
-                  <button
-                    onClick={encryptAll}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 active:scale-[0.97]"
-                  >
-                    ⚡ Encrypt All
-                  </button>
-                )}
-
                 {/* Download */}
                 {localEncryptedCount > 0 ? (
                   <button
@@ -631,24 +686,16 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
                 )}
 
                 {localEncryptedCount > 0 && (
-                  <>
-                    <button
-                      onClick={decryptAll}
-                      className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 hover:bg-rose-500/30 active:scale-[0.97]"
-                    >
-                      🔓 Decrypt All ({localEncryptedCount} blocks)
-                    </button>
-                    <button
-                      onClick={toggleHighlight}
-                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
-                        showHighlight
-                          ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
-                          : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
-                      }`}
-                    >
-                      {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
-                    </button>
-                  </>
+                  <button
+                    onClick={toggleHighlight}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
+                      showHighlight
+                        ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
+                        : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
+                    }`}
+                  >
+                    {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
+                  </button>
                 )}
               </>
             )}
@@ -666,4 +713,6 @@ export default function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweak
       )}
     </div>
   );
-}
+});
+
+export default CanvasWorkspace;
