@@ -79,10 +79,23 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
   const onEncryptedCountChangeRef = useRef(onEncryptedCountChange);
   onEncryptedCountChangeRef.current = onEncryptedCountChange;
 
+  const blockSizeRef = useRef(blockSize);
+  blockSizeRef.current = blockSize;
+
   const updateEncryptedCount = () => {
     const count = encryptedBlocks.current.size;
     setLocalEncryptedCount(count);
     onEncryptedCountChangeRef.current?.(count);
+
+    if (canvasRef.current) {
+      const pPerBlock = getPixelsPerBlock();
+      const w = canvasRef.current.width;
+      const h = canvasRef.current.height;
+      if (w > 0 && h > 0) {
+        const totalBlocks = Math.ceil(w / pPerBlock) * h;
+        updateFullyEncrypted(count === totalBlocks && totalBlocks > 0);
+      }
+    }
   };
 
   // Keep stable refs to encryptAll / decryptAll for the imperative handle
@@ -125,11 +138,6 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
           } else {
             encryptedBlockData.current.delete(reqInfo.blockKey);
             encryptedBlocks.current.delete(reqInfo.blockKey);
-            
-            // Decrypting anything means the image is no longer fully encrypted
-            if (isFullyEncryptedRef.current) {
-              updateFullyEncrypted(false);
-            }
           }
           updateEncryptedCount();
 
@@ -212,7 +220,6 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
 
         updateEncryptedCount();
         clearHighlight();
-        updateFullyEncrypted(numBlocks > 0);
         updateImageLoaded(true);
 
         // Auto-switch to decrypt mode when loading a .ciphercanvas file
@@ -239,7 +246,6 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
             encryptedBlockData.current.clear();
             updateEncryptedCount();
             clearHighlight();
-            updateFullyEncrypted(false);
             updateImageLoaded(true);
             onModeSwitch?.('encrypt');
           }
@@ -274,11 +280,11 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
     if (file) loadImageFile(file);
   };
 
-  const getPixelsPerBlock = () => {
+  function getPixelsPerBlock() {
     // 256 bits = 32 bytes = 8 pixels
     // 512 bits = 64 bytes = 16 pixels
     // 1024 bits = 128 bytes = 32 pixels
-    return (blockSize / 8) / 4; 
+    return (blockSizeRef.current / 8) / 4; 
   };
 
   const processBlock = (px: number, py: number) => {
@@ -491,7 +497,6 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
       updateProcessingState(false);
     }
     updateEncryptedCount();
-    updateFullyEncrypted(true);
   };
 
   // Keep refs in sync so the imperative handle always calls the latest closure

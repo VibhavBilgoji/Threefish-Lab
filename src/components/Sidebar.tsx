@@ -140,32 +140,39 @@ export default function Sidebar({ mode, setMode, blockSize, setBlockSize, tweak,
         <label className="text-xs font-semibold text-white/40 uppercase tracking-wider flex items-center gap-2">
           <KeyRound size={14} /> Secret Key
         </label>
-        <input 
-          type="text" 
-          value={encryptionKey}
-          onChange={(e) => !hasEncryptedBlocks && setEncryptionKey(e.target.value)}
-          disabled={hasEncryptedBlocks}
-          className={`bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none transition-all font-mono ${
-            hasEncryptedBlocks ? 'opacity-50 cursor-not-allowed' : 'focus:ring-1 focus:ring-emerald-500/50'
-          }`}
-          placeholder="Enter 16-128 char key..."
-        />
-        <button
-          onClick={() => !hasEncryptedBlocks && generateRandomKey()}
-          disabled={hasEncryptedBlocks}
-          className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-xs transition-all duration-300 ${
-            hasEncryptedBlocks
-              ? 'bg-white/5 text-white/30 ring-1 ring-white/10 cursor-not-allowed'
-              : 'bg-gradient-to-r from-emerald-500/15 to-blue-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:from-emerald-500/25 hover:to-blue-500/25 hover:ring-emerald-500/50 active:scale-[0.98]'
-          }`}
-        >
-          <Shuffle size={14} /> {keyCopied ? "Copied to Clipboard!" : "Generate Random Key"}
-        </button>
-        {hasEncryptedBlocks && (
-          <p className="text-[10px] text-amber-400/70 uppercase tracking-widest">
-            ⚠ Decrypt all blocks to change the secret key
-          </p>
-        )}
+        {(() => {
+          const isKeyLocked = mode === 'encrypt' && hasEncryptedBlocks;
+          return (
+            <>
+              <input 
+                type="text" 
+                value={encryptionKey}
+                onChange={(e) => !isKeyLocked && setEncryptionKey(e.target.value)}
+                disabled={isKeyLocked}
+                className={`bg-black/50 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none transition-all font-mono ${
+                  isKeyLocked ? 'opacity-50 cursor-not-allowed' : 'focus:ring-1 focus:ring-emerald-500/50'
+                }`}
+                placeholder="Enter 16-128 char key..."
+              />
+              <button
+                onClick={() => !isKeyLocked && generateRandomKey()}
+                disabled={isKeyLocked}
+                className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-xs transition-all duration-300 ${
+                  isKeyLocked
+                    ? 'bg-white/5 text-white/30 ring-1 ring-white/10 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-emerald-500/15 to-blue-500/15 text-emerald-400 ring-1 ring-emerald-500/30 hover:from-emerald-500/25 hover:to-blue-500/25 hover:ring-emerald-500/50 active:scale-[0.98]'
+                }`}
+              >
+                <Shuffle size={14} /> {keyCopied ? "Copied to Clipboard!" : "Generate Random Key"}
+              </button>
+              {isKeyLocked && (
+                <p className="text-[10px] text-amber-400/70 uppercase tracking-widest">
+                  ⚠ Switch to decrypt mode or clear image to change secret key
+                </p>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       <div className="flex flex-col gap-3 mt-auto mb-4">
