@@ -45,7 +45,14 @@ export default function Home() {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
 
     import('peerjs').then(({ default: Peer }) => {
-      const peer = new Peer();
+      const peer = new Peer({
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      });
 
       peer.on('open', () => {
         const conn = peer.connect(peerId, { reliable: true, serialization: 'binary' });

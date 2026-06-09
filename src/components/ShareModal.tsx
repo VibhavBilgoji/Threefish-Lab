@@ -77,7 +77,14 @@ export default function ShareModal({ isOpen, onClose, imageLoaded, getShareableD
     import('peerjs').then(({ default: Peer }) => {
       if (destroyed) return;
       
-      const peer = new Peer();
+      const peer = new Peer({
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      });
       peerRef.current = peer;
 
       peer.on('open', (id: string) => {
@@ -137,9 +144,25 @@ export default function ShareModal({ isOpen, onClose, imageLoaded, getShareableD
     setScanError('');
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode, width: { ideal: 640 }, height: { ideal: 480 } }
-      });
+      let stream: MediaStream;
+      try {
+        // Attempt 1: Specific orientation and resolution
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+      } catch (e1) {
+        try {
+          // Attempt 2: Just orientation (fixes OverconstrainedError on some phones)
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode }
+          });
+        } catch (e2) {
+          // Attempt 3: Any available camera (fixes NotReadableError on stubborn devices)
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true
+          });
+        }
+      }
       streamRef.current = stream;
       
       if (videoRef.current) {
@@ -215,7 +238,14 @@ export default function ShareModal({ isOpen, onClose, imageLoaded, getShareableD
     setScanStatus('connecting');
     
     import('peerjs').then(({ default: Peer }) => {
-      const peer = new Peer();
+      const peer = new Peer({
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      });
       scanPeerRef.current = peer;
 
       peer.on('open', () => {
