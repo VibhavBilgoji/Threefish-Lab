@@ -10,15 +10,19 @@
   },
   "dependencies": {
     "framer-motion": "^12.38.0",
+    "jsqr": "^1.4.0",
     "katex": "^0.16.45",
     "lucide-react": "^1.14.0",
     "next": "16.2.6",
+    "peerjs": "^1.5.5",
+    "qrcode": "^1.5.4",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.0",
     "@types/node": "^20.19.40",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",

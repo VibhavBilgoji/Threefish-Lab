@@ -19,6 +19,8 @@ type Props = {
 export type CanvasWorkspaceHandle = {
   encryptAll: () => void;
   decryptAll: () => void;
+  getShareableData: () => ArrayBuffer | null;
+  loadShareableData: (data: ArrayBuffer) => void;
 };
 
 const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function CanvasWorkspace({ mode, blockSize, setBlockSize, onTweakUpdate, encryptionKey, onEncryptedCountChange, onModeSwitch, onImageLoadedChange, onProcessingChange, onFullyEncryptedChange }, ref) {
@@ -98,13 +100,17 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
     }
   };
 
-  // Keep stable refs to encryptAll / decryptAll for the imperative handle
+  // Keep stable refs for the imperative handle
   const encryptAllRef = useRef<() => void>(() => {});
   const decryptAllRef = useRef<() => void>(() => {});
+  const getShareableDataRef = useRef<() => ArrayBuffer | null>(() => null);
+  const loadShareableDataRef = useRef<(data: ArrayBuffer) => void>(() => {});
 
   useImperativeHandle(ref, () => ({
     encryptAll: () => encryptAllRef.current(),
     decryptAll: () => decryptAllRef.current(),
+    getShareableData: () => getShareableDataRef.current(),
+    loadShareableData: (data: ArrayBuffer) => loadShareableDataRef.current(data),
   }));
 
   // Setup worker — created ONCE for the component lifetime (mode is per-request, not per-worker)
@@ -149,8 +155,6 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
           const imgData = new ImageData(displayBuf, reqInfo.w, reqInfo.h);
           ctx.putImageData(imgData, reqInfo.x, reqInfo.y);
 
-
-
           // Update highlight overlay if visible
           if (showHighlightRef.current) drawHighlight();
         }
@@ -168,6 +172,54 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
   }, []); // Worker persists across mode changes — mode is sent per-request
 
 
+  // --- Load from .ciphercanvas binary buffer ---
+  const loadCipherCanvasBuffer = (buf: ArrayBuffer) => {
+    const view = new DataView(buf);
+    const fileBlockSize = view.getUint32(4, true) as 256 | 512 | 1024;
+    const filePPerBlock = view.getUint32(8, true);
+    const w = view.getUint32(12, true);
+    const h = view.getUint32(16, true);
+    const displayPixels = new Uint8ClampedArray(buf, 20, w * h * 4);
+
+    if (!canvasRef.current || !bgCanvasRef.current) return;
+    canvasRef.current.width = w;
+    canvasRef.current.height = h;
+    bgCanvasRef.current.width = w;
+    bgCanvasRef.current.height = h;
+
+    const displayImg = new ImageData(displayPixels, w, h);
+    canvasRef.current.getContext('2d')?.putImageData(displayImg, 0, 0);
+    bgCanvasRef.current.getContext('2d')?.putImageData(displayImg, 0, 0);
+
+    encryptedBlocks.current.clear();
+    encryptedBlockData.current.clear();
+
+    const bytesPerCipherBlock = filePPerBlock * 4;
+    let offset = 20 + w * h * 4;
+    const numBlocks = view.getUint32(offset, true);
+    offset += 4;
+    for (let i = 0; i < numBlocks; i++) {
+      const bx = view.getUint32(offset, true);
+      const by = view.getUint32(offset + 4, true);
+      const cipherBytes = new Uint8Array(buf, offset + 8, bytesPerCipherBlock);
+      const blockKey = `${bx},${by}`;
+      encryptedBlocks.current.add(blockKey);
+      encryptedBlockData.current.set(blockKey, new Uint8Array(cipherBytes));
+      offset += 8 + bytesPerCipherBlock;
+    }
+
+    updateEncryptedCount();
+    clearHighlight();
+    updateImageLoaded(true);
+
+    // Auto-switch to decrypt mode when loading a .ciphercanvas file
+    onModeSwitch?.('decrypt');
+
+    if (fileBlockSize !== blockSize) {
+      setBlockSize(fileBlockSize);
+      alert(`Notice: Block size automatically set to ${fileBlockSize}-bit to match the loaded encrypted image.`);
+    }
+  };
 
   // --- Load image from a File object ---
   // .ciphercanvas: binary format with display pixels + separate raw cipher bytes
@@ -179,56 +231,7 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
 
       if (magic === 0x43434e56) {
         // ---- .ciphercanvas format ----
-        // Header (20 bytes): magic(4) + blockSize(4) + pPerBlock(4) + width(4) + height(4)
-        // Section 1: display pixels, all alpha=255 (width*height*4 bytes)
-        // Section 2: numBlocks (4 bytes)
-        // Section 3: for each block: bx(4) + by(4) + cipherBytes(pPerBlock*4)
-        const fileBlockSize = view.getUint32(4, true) as 256 | 512 | 1024;
-        const filePPerBlock = view.getUint32(8, true);
-        const w = view.getUint32(12, true);
-        const h = view.getUint32(16, true);
-        const displayPixels = new Uint8ClampedArray(buf, 20, w * h * 4);
-
-        if (!canvasRef.current || !bgCanvasRef.current) return;
-        canvasRef.current.width = w;
-        canvasRef.current.height = h;
-        bgCanvasRef.current.width = w;
-        bgCanvasRef.current.height = h;
-
-        // Write display pixels directly — alpha=255 everywhere, no premultiplication issue
-        const displayImg = new ImageData(displayPixels, w, h);
-        canvasRef.current.getContext('2d')?.putImageData(displayImg, 0, 0);
-        bgCanvasRef.current.getContext('2d')?.putImageData(displayImg, 0, 0);
-
-        // Restore cipher block map from file
-        encryptedBlocks.current.clear();
-        encryptedBlockData.current.clear();
-
-        const bytesPerCipherBlock = filePPerBlock * 4;
-        let offset = 20 + w * h * 4;
-        const numBlocks = view.getUint32(offset, true);
-        offset += 4;
-        for (let i = 0; i < numBlocks; i++) {
-          const bx = view.getUint32(offset, true);
-          const by = view.getUint32(offset + 4, true);
-          const cipherBytes = new Uint8Array(buf, offset + 8, bytesPerCipherBlock);
-          const blockKey = `${bx},${by}`;
-          encryptedBlocks.current.add(blockKey);
-          encryptedBlockData.current.set(blockKey, new Uint8Array(cipherBytes));
-          offset += 8 + bytesPerCipherBlock;
-        }
-
-        updateEncryptedCount();
-        clearHighlight();
-        updateImageLoaded(true);
-
-        // Auto-switch to decrypt mode when loading a .ciphercanvas file
-        onModeSwitch?.('decrypt');
-
-        if (fileBlockSize !== blockSize) {
-          setBlockSize(fileBlockSize);
-          alert(`Notice: Block size automatically set to ${fileBlockSize}-bit to match the loaded encrypted image.`);
-        }
+        loadCipherCanvasBuffer(buf);
       } else {
         // ---- Regular image ----
         if (!file.type.startsWith('image/')) return;
@@ -362,6 +365,11 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!imageLoaded) return;
+    // Auto-disable highlight overlay before processing
+    if (showHighlightRef.current) {
+      clearHighlight();
+      setShowHighlight(false);
+    }
     setIsDrawing(true);
     processedInDrag.current.clear();
     lastPointerPos.current = null;
@@ -419,6 +427,11 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
   // --- Decrypt All remaining blocks at once ---
   const decryptAll = () => {
     if (!workerRef.current) return;
+    // Auto-disable highlight overlay before processing
+    if (showHighlightRef.current) {
+      clearHighlight();
+      setShowHighlight(false);
+    }
 
     // Skip orphan blocks (in encryptedBlocks but not yet in encryptedBlockData — still in-flight)
     // They'll be decryptable once their encryption response arrives
@@ -452,6 +465,11 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
   // --- Encrypt every block in the image (required before sharing via download) ---
   const encryptAll = () => {
     if (!canvasRef.current || !workerRef.current) return;
+    // Auto-disable highlight overlay before processing
+    if (showHighlightRef.current) {
+      clearHighlight();
+      setShowHighlight(false);
+    }
     const pPerBlock = getPixelsPerBlock();
     const w = canvasRef.current.width;
     const h = canvasRef.current.height;
@@ -503,29 +521,20 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
   encryptAllRef.current = encryptAll;
   decryptAllRef.current = decryptAll;
 
-  // --- Download as .ciphercanvas binary ---
-  // Format:
-  //   Header (20B): magic(4) + blockSize(4) + pPerBlock(4) + width(4) + height(4)
-  //   Section 1: display pixels with alpha=255 (width*height*4 bytes)
-  //   Section 2: numBlocks (4 bytes)
-  //   Section 3: per-block: bx(4) + by(4) + raw cipher bytes (pPerBlock*4 bytes)
-  const downloadImage = () => {
-    if (!canvasRef.current) return;
+  // --- Serialize current canvas state as .ciphercanvas binary ---
+  const serializeState = (): ArrayBuffer | null => {
+    if (!canvasRef.current) return null;
     const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
     const w = canvasRef.current.width;
     const h = canvasRef.current.height;
     const pPerBlock = getPixelsPerBlock();
     const bytesPerCipherBlock = pPerBlock * 4;
 
-    // Section 1: get display pixels (already alpha=255 in canvas from our putImageData with forced alpha)
     const displayPixels = new Uint8Array(ctx.getImageData(0, 0, w, h).data.buffer);
-
-    // Collect cipher blocks
     const blocks = Array.from(encryptedBlockData.current.entries());
     const numBlocks = blocks.length;
 
-    // Build binary buffer
     const headerSize = 20;
     const section1Size = w * h * 4;
     const section2Size = 4;
@@ -559,6 +568,17 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
       offset += 8 + bytesPerCipherBlock;
     }
 
+    return buffer;
+  };
+
+  // Sync refs for imperative handle
+  getShareableDataRef.current = serializeState;
+  loadShareableDataRef.current = loadCipherCanvasBuffer;
+
+  // --- Download as .ciphercanvas binary ---
+  const downloadImage = () => {
+    const buffer = serializeState();
+    if (!buffer) return;
     const blob = new Blob([buffer], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -619,17 +639,17 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
     >
       {/* Drag-over overlay */}
       {isDraggingOver && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-emerald-500/10 backdrop-blur-sm border-2 border-dashed border-emerald-400/50 rounded-2xl pointer-events-none">
-          <span className="text-emerald-400 font-semibold text-lg tracking-widest uppercase">Drop image or .ciphercanvas file</span>
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-[var(--accent-emerald-bg)] backdrop-blur-sm border-2 border-dashed border-[var(--accent-emerald-ring-soft)] rounded-2xl pointer-events-none">
+          <span className="text-[var(--accent-emerald)] font-semibold text-lg tracking-widest uppercase">Drop image or .ciphercanvas file</span>
         </div>
       )}
 
       {!imageLoaded && (
         <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
           <label className="cursor-pointer pointer-events-auto group">
-            <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-white/5 border border-dashed border-white/20 backdrop-blur-md transition-all group-hover:bg-white/10 group-hover:scale-105">
-              <span className="text-white/60 font-medium tracking-widest text-sm">UPLOAD OR DROP IMAGE TO INITIALIZE</span>
-              <span className="text-white/30 text-xs">Click to browse or drag & drop</span>
+            <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-[var(--bg-surface)] border border-dashed border-[var(--border-secondary)] backdrop-blur-md transition-all group-hover:bg-[var(--bg-surface-hover)] group-hover:scale-105">
+              <span className="text-[var(--text-secondary)] font-medium tracking-widest text-sm text-center">UPLOAD OR DROP IMAGE TO INITIALIZE</span>
+              <span className="text-[var(--text-muted)] text-xs">Click to browse or drag & drop</span>
               <input type="file" accept="image/*,.ciphercanvas" onChange={handleImageUpload} className="hidden" />
             </div>
           </label>
@@ -639,13 +659,13 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
       {/* Image container with noticeable glow */}
       <div className={`relative rounded-xl overflow-hidden transition-all duration-500 ${
         imageLoaded
-          ? 'ring-1 ring-white/15 shadow-[0_0_30px_rgba(16,185,129,0.2),0_0_60px_rgba(16,185,129,0.1),0_0_100px_rgba(59,130,246,0.12)]'
+          ? 'ring-1 ring-[var(--border-secondary)] shadow-[0_0_30px_var(--glow-1),0_0_60px_var(--glow-2),0_0_100px_var(--glow-3)]'
           : 'opacity-0'
       }`}>
         <canvas ref={bgCanvasRef} className="hidden" />
         <canvas
           ref={canvasRef}
-          className="cursor-crosshair max-w-full max-h-[80vh] object-contain"
+          className="cursor-crosshair max-w-full max-h-[75vh] md:max-h-[80vh] object-contain"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -666,9 +686,9 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
             {isProcessing ? (
               <button
                 disabled
-                className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 bg-white/5 text-white/50 ring-white/10 cursor-not-allowed"
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 bg-[var(--bg-surface)] text-[var(--text-muted)] ring-[var(--ring-default)] cursor-not-allowed"
               >
-                <div className="w-3 h-3 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
+                <div className="w-3 h-3 rounded-full border-2 border-[var(--spinner-track)] border-t-[var(--spinner-head)] animate-spin" />
                 Processing...
               </button>
             ) : (
@@ -677,14 +697,14 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
                 {localEncryptedCount > 0 ? (
                   <button
                     onClick={downloadImage}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-[var(--accent-blue-soft)] text-[var(--accent-blue)] ring-1 ring-[var(--accent-blue-ring-soft)] hover:bg-[var(--accent-blue-hover)] active:scale-[0.97]"
                   >
                     ⬇ Download .ciphercanvas
                   </button>
                 ) : (
                   <button
                     onClick={downloadNormalImage}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30 hover:bg-blue-500/25 active:scale-[0.97]"
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 bg-[var(--accent-blue-soft)] text-[var(--accent-blue)] ring-1 ring-[var(--accent-blue-ring-soft)] hover:bg-[var(--accent-blue-hover)] active:scale-[0.97]"
                   >
                     ⬇ Download PNG
                   </button>
@@ -695,8 +715,8 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
                     onClick={toggleHighlight}
                     className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold uppercase tracking-wider transition-all duration-300 ring-1 active:scale-[0.97] ${
                       showHighlight
-                        ? 'bg-amber-500/20 text-amber-400 ring-amber-500/40'
-                        : 'bg-white/5 text-white/50 ring-white/10 hover:bg-white/10'
+                        ? 'bg-[var(--accent-amber-bg)] text-[var(--accent-amber)] ring-[var(--accent-amber-ring)]'
+                        : 'bg-[var(--bg-surface)] text-[var(--text-secondary)] ring-[var(--ring-default)] hover:bg-[var(--bg-surface-hover)]'
                     }`}
                   >
                     {showHighlight ? '🔴 Hide Highlights' : '🔍 Show Encrypted'}
@@ -707,7 +727,7 @@ const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, Props>(function Canvas
           </div>
 
           {/* Contextual hint */}
-          <p className="text-[10px] text-white/25 tracking-widest uppercase text-center">
+          <p className="text-[10px] text-[var(--text-faint)] tracking-widest uppercase text-center">
             {isFullyEncrypted
               ? 'Fully encrypted — safe to download and share'
               : localEncryptedCount > 0
